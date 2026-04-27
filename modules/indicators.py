@@ -76,7 +76,9 @@ class IndicatorResult:
     is_gold_fake: bool = False  # 金叉空（金叉后立即死叉，诱多）
     is_dead_fake: bool = False  # 死叉多（死叉后立即金叉，空中加油）
     is_top_divergence: bool = False  # 顶背离
+    top_div_desc: str = ""           # 顶背离描述
     is_bottom_divergence: bool = False  # 底背离
+    bottom_div_desc: str = ""        # 底背离描述
     macd_veto: bool = False  # MACD 一票否决（不能买）
 
     # BBI
@@ -447,6 +449,79 @@ def calculate_macd(klines: List[DailyData],
     return dif_list, dea_list, macd_list
 
 
+def detect_divergence(klines: List[DailyData], dif_list: List[float]) -> Dict:
+    """
+    顶底背离系统化检测（基于语料标准）
+
+    顶背离：价格创新高但DIF不创新高 → 趋势衰竭，见顶减仓
+    底背离：价格创新低但DIF不创新低 → 反转在即，底部建仓
+
+    要求：
+    - 对比窗口：最近60个交易日的极值区间
+    - 价格容忍度：接近极值1%-2%即视为"同一水平"
+    - DIF衰减：DIF未突破前值的90%(顶)或未跌破前值的110%(底)
+    """
+    result = {
+        'is_top_divergence': False,
+        'top_div_desc': '',
+        'is_bottom_divergence': False,
+        'bottom_div_desc': '',
+    }
+
+    if len(klines) < 60 or len(dif_list) < 30:
+        return result
+
+    closes = [k.close for k in klines]
+    today_close = closes[-1]
+
+    # ====== 顶背离检测 ======
+    # 找最近60天内的最高收盘价窗口（排除最后5天，避免与当前比较）
+    window_start = max(0, len(closes) - 60)
+    window_end = max(0, len(closes) - 10)
+    if window_end <= window_start:
+        window_end = len(closes) - 5
+
+    if window_end > window_start:
+        max_close = max(closes[window_start:window_end])
+        max_close_idx = closes[window_start:window_end].index(max_close) + window_start
+
+        # 对应窗口的DIF最大值
+        dif_window_start = max(0, window_start)
+        dif_window_end = min(len(dif_list), window_end)
+        if dif_window_end > dif_window_start:
+            max_dif = max(dif_list[dif_window_start:dif_window_end])
+
+            # 当前价格接近或达到最高，但DIF明显低于前高
+            price_near_high = today_close >= max_close * 0.98
+            dif_weaker = dif_list[-1] < max_dif * 0.9
+
+            if price_near_high and dif_weaker and max_dif > 0:
+                result['is_top_divergence'] = True
+                decay_pct = (1 - dif_list[-1] / max_dif) * 100 if max_dif != 0 else 0
+                result['top_div_desc'] = f"价近高({today_close:.2f} vs {max_close:.2f}) DIF衰减{decay_pct:.0f}%"
+
+    # ====== 底背离检测 ======
+    if window_end > window_start:
+        min_close = min(closes[window_start:window_end])
+        min_close_idx = closes[window_start:window_end].index(min_close) + window_start
+
+        dif_window_start = max(0, window_start)
+        dif_window_end = min(len(dif_list), window_end)
+        if dif_window_end > dif_window_start:
+            min_dif = min(dif_list[dif_window_start:dif_window_end])
+
+            # 当前价格接近或达到最低，但DIF明显高于前低
+            price_near_low = today_close <= min_close * 1.02
+            dif_stronger = dif_list[-1] > min_dif * 1.1
+
+            if price_near_low and dif_stronger and min_dif < 0:
+                result['is_bottom_divergence'] = True
+                strength_pct = (1 - dif_list[-1] / min_dif) * 100 if min_dif != 0 else 0
+                result['bottom_div_desc'] = f"价近低({today_close:.2f} vs {min_close:.2f}) DIF回升{strength_pct:.0f}%"
+
+    return result
+
+
 def detect_macd_signals(klines: List[DailyData], dif_list: List[float],
                         dea_list: List[float], macd_list: List[float]) -> Dict[str, Any]:
     """
@@ -466,7 +541,9 @@ def detect_macd_signals(klines: List[DailyData], dif_list: List[float],
         'is_gold_fake': False,           # 金叉空（诱多）
         'is_dead_fake': False,           # 死叉多（空中加油）
         'is_top_divergence': False,      # 顶背离
+        'top_div_desc': '',              # 顶背离描述
         'is_bottom_divergence': False,    # 底背离
+        'bottom_div_desc': '',           # 底背离描述
         'macd_veto': False,              # 一票否决
     }
 
@@ -513,23 +590,12 @@ def detect_macd_signals(klines: List[DailyData], dif_list: List[float],
         if signals['is_gold_cross'] and recent_dead >= 1:
             signals['is_dead_fake'] = True
 
-    # === 用法 2: 顶底背离 ===
-    if len(klines) >= 60 and len(dif_list) >= 30:
-        closes = [k.close for k in klines]
-
-        # 顶背离：价格创新高但 DIF 没创新高
-        max_close = max(closes[-60:-10]) if len(closes) > 70 else max(closes[:-5])
-        max_dif = max(dif_list[:-5]) if len(dif_list) > 5 else 0
-
-        if closes[-1] >= max_close * 0.98 and dif_today < max_dif * 0.9:
-            signals['is_top_divergence'] = True
-
-        # 底背离：价格创新低但 DIF 没创新低
-        min_close = min(closes[-60:-10]) if len(closes) > 70 else min(closes[:-5])
-        min_dif = min(dif_list[:-5]) if len(dif_list) > 5 else 0
-
-        if closes[-1] <= min_close * 1.02 and dif_today > min_dif * 1.1:
-            signals['is_bottom_divergence'] = True
+    # === 用法 2: 顶底背离（系统化检测）===
+    div = detect_divergence(klines, dif_list)
+    signals['is_top_divergence'] = div['is_top_divergence']
+    signals['is_bottom_divergence'] = div['is_bottom_divergence']
+    signals['top_div_desc'] = div['top_div_desc']
+    signals['bottom_div_desc'] = div['bottom_div_desc']
 
     # === 一票否决权 ===
     # DIF < 0 + 没有底背离 → 一票否决
@@ -1596,7 +1662,9 @@ def analyze_stock(ts_code: str, days: int = 100) -> IndicatorResult:
             result.is_gold_fake = macd_signals['is_gold_fake']
             result.is_dead_fake = macd_signals['is_dead_fake']
             result.is_top_divergence = macd_signals['is_top_divergence']
+            result.top_div_desc = macd_signals.get('top_div_desc', '')
             result.is_bottom_divergence = macd_signals['is_bottom_divergence']
+            result.bottom_div_desc = macd_signals.get('bottom_div_desc', '')
             result.macd_veto = macd_signals['macd_veto']
 
     # 计算 BBI（需要足够历史数据）
@@ -1851,9 +1919,9 @@ def format_result(result: IndicatorResult) -> str:
         macd_lines.append("  !!! 死叉多（空中加油，强多）")
 
     if result.is_top_divergence:
-        macd_lines.append("  !!! 顶背离，见顶减仓")
+        macd_lines.append(f"  !!! 顶背离，见顶减仓 ({result.top_div_desc})")
     if result.is_bottom_divergence:
-        macd_lines.append("  !!! 底背离，反转建仓")
+        macd_lines.append(f"  !!! 底背离，反转建仓 ({result.bottom_div_desc})")
 
     if result.macd_veto:
         macd_lines.append("  XXX MACD一票否决：不能买！")
