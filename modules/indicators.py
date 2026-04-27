@@ -190,6 +190,27 @@ class IndicatorResult:
     b1_turnover: float = 0       # B1累计换手率%
     b1_pass_30: bool = False     # 是否通过两个30%原则
 
+    # 娜娜图 (完美建仓形态)
+    is_nana: bool = False        # 娜娜图信号
+    nana_desc: str = ""          # 描述
+
+    # 黄金碗 (白线黄线之间的区域)
+    is_in_bowl: bool = False     # 价格是否在碗内(白线>价>黄线)
+    bowl_upper: float = 0        # 碗上沿(白线)
+    bowl_lower: float = 0        # 碗下沿(黄线)
+
+    # 呼吸结构
+    breath_phase: str = ""       # 呼气/吸气/无
+    breath_n_type: bool = False  # 是否N型结构
+
+    # SB1假摔
+    is_sb1: bool = False         # SB1假摔信号
+    sb1_desc: str = ""           # 描述
+
+    # B3买点
+    is_b3: bool = False          # B3买点信号
+    b3_desc: str = ""            # 描述
+
     # 异动记录
     last_yidong_date: str = ""
 
@@ -1501,6 +1522,164 @@ def check_two_30_rule(klines: List[DailyData]) -> Dict:
     return result
 
 
+def detect_nana_chart(klines: List[DailyData]) -> Dict:
+    """
+    娜娜图检测：完美建仓形态
+    条件：股价新高但阳线缩量，次高点阴线也缩量
+    """
+    result = {'is_nana': False, 'nana_desc': ''}
+    if len(klines) < 20:
+        return result
+    n = len(klines)
+    # 找最近高点区域
+    highs = [k.high for k in klines]
+    peak_idx = n - 1
+    for i in range(n - 2, max(0, n - 30), -1):
+        if highs[i] >= highs[peak_idx]:
+            peak_idx = i
+    # 从峰值往前找第二高
+    second_peak = None
+    for i in range(peak_idx - 2, max(0, peak_idx - 25), -1):
+        if klines[i].high < klines[peak_idx].high * 0.98:
+            second_peak = i
+            break
+    if second_peak is None or peak_idx < 5:
+        return result
+    # 检查峰值区域是否缩量
+    peak_vol = klines[peak_idx].vol
+    prev5_avg = sum(k.vol for k in klines[max(0,peak_idx-5):peak_idx]) / min(5, peak_idx)
+    vol_shrink_at_peak = peak_vol < prev5_avg * 0.8 if prev5_avg > 0 else False
+    # 次高点缩量
+    second_vol = klines[second_peak].vol
+    sec_prev5 = sum(k.vol for k in klines[max(0,second_peak-5):second_peak]) / min(5, second_peak)
+    vol_shrink_second = second_vol < sec_prev5 * 0.8 if sec_prev5 > 0 else False
+    # 底部堆量：找低点区域量是否明显大于峰值区域
+    low_idx = min(range(max(0, second_peak-10), second_peak), key=lambda i: klines[i].low)
+    bottom_vol = klines[low_idx].vol
+    if vol_shrink_at_peak and vol_shrink_second and bottom_vol > peak_vol * 0.5:
+        result['is_nana'] = True
+        result['nana_desc'] = f"价新高缩量(量{peak_vol:.0f}<{prev5_avg:.0f}), 次高也缩量"
+    return result
+
+
+def detect_golden_bowl(klines: List[DailyData]) -> Dict:
+    """
+    黄金碗检测：价格在白线( zg_white )和黄线( dg_yellow )之间
+    条件：白线>黄线(多头排列) + 价格落入碗内
+    """
+    result = {'is_in_bowl': False, 'bowl_upper': 0, 'bowl_lower': 0}
+    if len(klines) < 120:
+        return result
+    white = calculate_zg_white(klines)
+    yellow = calculate_dg_yellow(klines)
+    if white <= 0 or yellow <= 0:
+        return result
+    result['bowl_upper'] = round(white, 2)
+    result['bowl_lower'] = round(yellow, 2)
+    today_close = klines[-1].close
+    # 白线>黄线且价格在碗内
+    if white > yellow and yellow <= today_close <= white:
+        result['is_in_bowl'] = True
+    return result
+
+
+def detect_breathing_structure(klines: List[DailyData]) -> Dict:
+    """
+    呼吸结构检测：放量涨->缩量跌->放量涨 的N型节奏
+    """
+    result = {'breath_phase': '', 'breath_n_type': False}
+    if len(klines) < 10:
+        return result
+    n = len(klines)
+    # 分析最近5-7天的量价节奏
+    phases = []
+    for i in range(max(0, n-7), n):
+        day = klines[i]
+        prev = klines[i-1] if i > 0 else None
+        if not prev or prev.vol <= 0:
+            continue
+        vol_ratio = day.vol / prev.vol
+        if day.pct_chg > 0 and vol_ratio > 1:
+            phases.append('exhale')  # 放量涨=呼气
+        elif day.pct_chg < 0 and vol_ratio < 1:
+            phases.append('inhale')  # 缩量跌=吸气
+        else:
+            phases.append('other')
+    # 判断当前阶段
+    if len(phases) >= 2:
+        if phases[-1] == 'exhale':
+            result['breath_phase'] = '呼气(放量上涨)'
+        elif phases[-1] == 'inhale':
+            result['breath_phase'] = '吸气(缩量回调)'
+        else:
+            result['breath_phase'] = '无明确节奏'
+    # N型结构：最近3个低点依次抬高
+    if n >= 10:
+        lows = [klines[i].low for i in range(n-10, n, 3)]
+        if len(lows) >= 3 and lows[-1] > lows[-2] > lows[-3]:
+            result['breath_n_type'] = True
+    return result
+
+
+def detect_sb1(klines: List[DailyData]) -> Dict:
+    """
+    SB1假摔检测：B1后跌破前低再迅速收回
+    条件：1)跌破前低 2)次日反包收回 3)收回放量
+    """
+    result = {'is_sb1': False, 'sb1_desc': ''}
+    if len(klines) < 6:
+        return result
+    n = len(klines)
+    today = klines[-1]
+    yesterday = klines[-2]
+    # 前天是假摔日
+    if len(klines) >= 3:
+        fake_drop = klines[-3]
+        prev_low = min(k.low for k in klines[-8:-3]) if n >= 8 else klines[-4].low
+        # 1) 跌破前低
+        broken_low = fake_drop.low < prev_low
+        # 2) 次日反包收回
+        recovered = yesterday.close > prev_low and yesterday.pct_chg > 2
+        # 3) 反包放量
+        vol_up = yesterday.vol > fake_drop.vol * 1.2
+        if broken_low and recovered and vol_up:
+            result['is_sb1'] = True
+            result['sb1_desc'] = f"假摔收回 收{yesterday.close:.2f}(+{yesterday.pct_chg:.1f}%) 量比{yesterday.vol/fake_drop.vol:.1f}x"
+    return result
+
+
+def detect_b3(klines: List[DailyData]) -> Dict:
+    """
+    B3买点检测：B2后缩量回踩不破B2低点
+    条件：1) 前面有B2(大涨>=4%) 2) 缩量小阳/十字星 3) 不破B2低点
+    """
+    result = {'is_b3': False, 'b3_desc': ''}
+    if len(klines) < 15:
+        return result
+    n = len(klines)
+    today = klines[-1]
+    prev = klines[-2]
+    # 往前找B2(大涨>=4%的阳线)
+    b2_idx = None
+    for i in range(n - 2, max(0, n - 15), -1):
+        if klines[i].pct_chg >= 4 and klines[i].close > klines[i].open:
+            b2_idx = i
+            break
+    if b2_idx is None:
+        return result
+    b2_low = klines[b2_idx].low
+    # B2后缩量小阳线
+    days_after = n - 1 - b2_idx
+    if 2 <= days_after <= 5:
+        today_vol_ratio = today.vol / klines[b2_idx].vol if klines[b2_idx].vol > 0 else 0
+        not_break_low = today.low >= b2_low * 0.98
+        small_candle = abs(today.pct_chg) < 3
+        if today_vol_ratio < 0.8 and not_break_low and small_candle:
+            result['is_b3'] = True
+            result['b3_desc'] = f"B2后回踩 收{today.close:.2f}(+{today.pct_chg:.1f}%) 量比{today_vol_ratio:.1f}x"
+    return result
+
+
 def calculate_sell_score(klines: List[DailyData]) -> Tuple[int, str]:
     """
     计算防卖飞评分 V1.4（5分制）
@@ -1837,6 +2016,37 @@ def analyze_stock(ts_code: str, days: int = 100) -> IndicatorResult:
         result.b1_rally_pct = rule30['b1_rally_pct']
         result.b1_pass_30 = rule30['b1_pass_30']
 
+    # ========== 娜娜图 ==========
+    if len(klines) >= 20:
+        nana = detect_nana_chart(klines)
+        result.is_nana = nana['is_nana']
+        result.nana_desc = nana['nana_desc']
+
+    # ========== 黄金碗 ==========
+    if len(klines) >= 120:
+        bowl = detect_golden_bowl(klines)
+        result.is_in_bowl = bowl['is_in_bowl']
+        result.bowl_upper = bowl['bowl_upper']
+        result.bowl_lower = bowl['bowl_lower']
+
+    # ========== 呼吸结构 ==========
+    if len(klines) >= 10:
+        breath = detect_breathing_structure(klines)
+        result.breath_phase = breath['breath_phase']
+        result.breath_n_type = breath['breath_n_type']
+
+    # ========== SB1假摔 ==========
+    if len(klines) >= 6:
+        sb1 = detect_sb1(klines)
+        result.is_sb1 = sb1['is_sb1']
+        result.sb1_desc = sb1['sb1_desc']
+
+    # ========== B3买点 ==========
+    if len(klines) >= 15:
+        b3 = detect_b3(klines)
+        result.is_b3 = b3['is_b3']
+        result.b3_desc = b3['b3_desc']
+
     # 卖出评分
     sell_score, sell_reason = calculate_sell_score(klines)
     result.sell_score = sell_score
@@ -2031,6 +2241,24 @@ def format_result(result: IndicatorResult) -> str:
     # 两个30%原则
     if result.b1_rally_pct != 0 or result.b1_pass_30:
         lines.append(f"[两个30%原则] B1涨幅={result.b1_rally_pct:.1f}%  通过:{result.b1_pass_30}")
+        lines.append("")
+
+    # 娜娜图/黄金碗/呼吸结构/SB1/B3
+    if result.is_nana:
+        lines.append(f"[娜娜图] *** 完美建仓  {result.nana_desc}")
+        lines.append("")
+    if result.is_in_bowl:
+        lines.append(f"[黄金碗] *** 价格在碗内  上沿={result.bowl_upper:.2f}  下沿={result.bowl_lower:.2f}")
+        lines.append("")
+    if result.breath_phase and '无' not in result.breath_phase:
+        n_type = " N型结构" if result.breath_n_type else ""
+        lines.append(f"[呼吸结构] {result.breath_phase}{n_type}")
+        lines.append("")
+    if result.is_sb1:
+        lines.append(f"[SB1假摔] *** {result.sb1_desc}")
+        lines.append("")
+    if result.is_b3:
+        lines.append(f"[B3买点] *** {result.b3_desc}")
         lines.append("")
 
     lines.append(f"[防卖飞评分] {result.sell_score}/5  ({result.sell_reason})")
