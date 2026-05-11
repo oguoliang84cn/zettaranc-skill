@@ -156,12 +156,78 @@ python -m pytest tests/ -v
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
 | `TUSHARE_TOKEN` | Tushare API Token（56位） | 必填 |
-| `TUSHARE_API_URL` | 中转 API 地址 | `http://tsy.xiaodefa.cn` |
-| `TUSHARE_VERIFY_TOKEN_URL` | 实时行情验证地址 | `http://tsy.xiaodefa.cn/dataapi/sdk-event` |
+| `TUSHARE_API_URL` | 中转 API 地址 | 空（使用官方地址） |
+| `TUSHARE_VERIFY_TOKEN_URL` | 实时行情验证地址 | 空（使用官方地址） |
 
-> **使用公共中转服务**：默认配置即可，开箱即用。项目使用 `tsy.xiaodefa.cn` 公共中转服务，不需要 Tushare 高级积分。
->
-> **自建中转服务**：如需自建中转服务，修改这两个 URL 即可。项目代码与中转服务解耦。
+> **注意**：URL 已改为从 `.env` 读取，不填则使用 Tushare 官方地址。如需使用中转服务，自行配置对应的中转服务器地址。
+
+### 必需数据与 Tushare 接口对照
+
+本项目依赖以下 Tushare 接口获取数据，按权限分类：
+
+#### 基础接口（5000 积分可用）
+
+| 数据用途 | Tushare 接口 | 说明 |
+|----------|-------------|------|
+| 股票基本信息 | `pro.stock_basic()` | 获取全部股票代码、名称、行业、上市状态 |
+| 日线行情 | `pro.daily()` | 获取 OHLCV、涨跌幅、成交量 |
+| 周线/月线 | `pro.weekly()` / `pro.monthly()` | 周线和月线数据 |
+| 复权因子 | `pro.adj_factor()` | 用于计算复权价格 |
+| 分红送股 | `pro.dividend()` | 分红、配股、送股数据 |
+| 指数日线 | `pro.index_daily()` | 上证/深证等指数K线 |
+| 沪深港通成交 | `pro.daily_hsgt()` | 沪深港通每日成交汇总 |
+| 场外基金净值 | `pro.fund_nav()` | 基金净值数据 |
+| 期货每日行情 | `pro.fut_daily()` | 期货K线数据 |
+
+#### 高级接口（12000+ 积分）
+
+| 数据用途 | Tushare 接口 | 说明 |
+|----------|-------------|------|
+| 资金流向 | `pro.moneyflow()` | 个股大单/小单资金流向 |
+| 沪深港通资金流 | `pro.moneyflow_hsgt()` | 沪深港通资金流向 |
+| 财务指标 | `pro.fina_indicator()` | PE、PB、ROE、资产负债率等 |
+| 财务报表 | `pro.financial_report()` | 利润表、资产负债表、现金流量表 |
+| 业绩快报 | `pro.express()` | 业绩预告、快报 |
+| 涨跌停列表 | `pro.limit_list_d()` | 当日涨停/跌停股票 |
+| 龙虎榜 | `pro.top_list()` | 龙虎榜机构和个股明细 |
+| 龙虎榜详情 | `pro.top_list_hsgt()` | 龙虎榜详细数据 |
+| 股东人数 | `pro.shareholder()` | 股东人数变化 |
+| 前十大股东 | `pro.top10_holders()` | 股东结构变化 |
+| 个股沪深港通持仓 | `pro.stock_top10_hsgt()` | 个股沪深港通持仓明细 |
+| 指数权重 | `pro.index_weight()` | 指数成分股权重 |
+
+#### 实时数据接口（特殊调用方式）
+
+| 数据用途 | Tushare 接口 | 调用方式 |
+|----------|-------------|---------|
+| A股实时行情 | `ts.realtime_quote()` | 需要额外设置 `ct.verify_token_url` |
+| 实时分笔成交 | `ts.realtime_tick()` | 需要 `api=pro` 参数 |
+| pro_bar 行情 | `ts.pro_bar()` | 需要 `api=pro` 参数 |
+
+#### 数据抓取工具
+
+推荐使用 `scripts/fetch_tushare_data.py` 脚本抓取数据：
+
+```bash
+# 查看所有可用命令
+python scripts/fetch_tushare_data.py --help
+
+# 抓取并保存到数据库
+python scripts/fetch_tushare_data.py stock_basic --save-db       # 股票基本信息
+python scripts/fetch_tushare_data.py daily 000001.SZ --start 20260101 --end 20260501 --save-db
+python scripts/fetch_tushare_data.py moneyflow 000001.SZ --date 20260509 --save-db
+python scripts/fetch_tushare_data.py limit_list --date 20260509 --save-db       # 涨跌停
+python scripts/fetch_tushare_data.py top_list --date 20260509 --save-db          # 龙虎榜
+python scripts/fetch_tushare_data.py fina_indicator 000001.SZ --start 20250101 --end 20250501 --save-db
+python scripts/fetch_tushare_data.py daily_hsgt --start 20260101 --end 20260501 --save-db  # 沪深港通
+python scripts/fetch_tushare_data.py index_daily 000001.SH --start 20260101 --end 20260501 --save-db
+
+# 仅查看不保存
+python scripts/fetch_tushare_data.py daily 000001.SZ --no-save
+
+# 抓取所有主要数据
+python scripts/fetch_tushare_data.py all --save-db
+```
 
 ### 数据库表结构
 

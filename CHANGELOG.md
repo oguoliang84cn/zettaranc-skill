@@ -2,6 +2,37 @@
 
 所有值得记录的变更都会写在这里。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [v2.1.1] - 2026-05-11
+
+> **「数据是交易的起点，接口是数据的钥匙。」**
+
+### 安全修复
+
+- **移除 Tushare URL 硬编码**：`tsy.xiaodefa.cn` 等内部域名不再硬编码在代码中
+  - `modules/tushare_client.py`
+  - `modules/data_sync.py`
+  - `scripts/sync_db_test.py`
+  - 改为从环境变量 `TUSHARE_API_URL` / `TUSHARE_VERIFY_TOKEN_URL` 读取
+  - `.env.example` 同步更新，默认值为空（使用官方地址）
+
+### 新增工具
+
+- **`scripts/fetch_tushare_data.py`** — Tushare Pro 高权限数据抓取脚本
+  - 支持 15000 积分高权限接口（12000+ 接口）
+  - 按权限分类：基础接口（5000积分）、高级接口（12000积分）、实时数据
+  - 默认保存到 SQLite 数据库（`--save-db`），支持 `--no-save` 仅查看
+  - 支持命令行参数：`stock_basic`, `daily`, `moneyflow`, `limit_list`, `top_list`, `fina_indicator`, `dividend`, `daily_hsgt`, `index_daily`, `realtime_quote` 等
+  - 集成限流控制（120次/分钟）
+
+### 文档更新
+
+- **README.md 新增「必需数据与 Tushare 接口对照」**
+  - 完整列出所有依赖的 Tushare 接口
+  - 按权限等级分类（5000积分 / 12000积分 / 实时数据）
+  - 提供数据抓取命令示例
+
+---
+
 ## [v2.1.0] - 2026-04-29
 
 > **「复盘是散户最重要的功课，随堂测试不会骗人。」**
